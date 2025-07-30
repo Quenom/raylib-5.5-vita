@@ -75,6 +75,7 @@ vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
     VERSION ${VITA_VERSION}
     NAME ${VITA_APP_NAME}
     FILE module module
+    FILE resources resources
 )
 
 if(false)#change to true to send eboot.bin to vita [make sure to edit the ip of ps vita] (requires vitacompanion)

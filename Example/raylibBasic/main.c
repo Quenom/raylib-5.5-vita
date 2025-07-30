@@ -21,6 +21,10 @@ int main(void)
 
     InitWindow(screenWidth, screenHeight, "raylib [core] example - input multitouch");
 
+    InitAudioDevice();      // Initialize audio device
+
+    Sound fxWav = LoadSound("resources/spring.wav");         // Load WAV audio file
+    
     Vector2 touchPositions[MAX_TOUCH_POINTS] = {0};
 
     // Set axis deadzones
@@ -35,6 +39,7 @@ int main(void)
     //---------------------------------------------------------------------------------------
     int gamepad = 0; // which gamepad to display
     // Main game loop
+    
     while (!WindowShouldClose()) // Detect window close button or ESC key
     {
         // Update
@@ -60,6 +65,10 @@ int main(void)
         if (IsKeyPressed(KEY_RIGHT))
             gamepad++;
 
+        if (IsGamepadButtonDown(gamepad, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)){
+            PlaySound(fxWav);
+        }
+        
         if (IsGamepadAvailable(gamepad))
         {
             DrawText(TextFormat("GP%d: %s", gamepad, GetGamepadName(gamepad)), 10, 10, 20, BLACK);
@@ -183,12 +192,13 @@ int main(void)
             }
         }
 
-        DrawText("touch the screen at multiple locations to get multiple balls", 10, 30, 20, DARKGRAY);
+        DrawText("touch the screen at multiple locations to get multiple balls1", 10, 30, 20, DARKGRAY);
 
         EndDrawing();
         //----------------------------------------------------------------------------------
     }
-
+    UnloadSound(fxWav);
+    CloseAudioDevice();
     // De-Initialization
     //--------------------------------------------------------------------------------------
     CloseWindow(); // Close window and OpenGL context
