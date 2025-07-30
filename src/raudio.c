@@ -83,6 +83,13 @@
 
 #if defined(SUPPORT_MODULE_RAUDIO)
 
+#define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
+#define MA_ENABLE_CUSTOM
+#define MA_ENABLE_SDL
+#define MA_NO_AVX2
+#define MA_NO_SSE2
+#define MA_NO_RUNTIME_LINKING
+
 #define MA_MALLOC RL_MALLOC
 #define MA_FREE RL_FREE
 
@@ -94,14 +101,11 @@
 #define MA_NO_NODE_GRAPH
 #define MA_NO_ENGINE
 #define MA_NO_GENERATION
+#define MA_DEBUG_OUTPUT
 
-// Threading model: Default: [0] COINIT_MULTITHREADED: COM calls objects on any thread (free threading)
-#define MA_COINIT_VALUE  2              // [2] COINIT_APARTMENTTHREADED: Each object has its own thread (apartment model)
-
-#define MINIAUDIO_IMPLEMENTATION
-//#define MA_DEBUG_OUTPUT
-#include "external/miniaudio.h"         // Audio device initialization and management
-#define MA_NO_RUNTIME_LINKING
+#include "SDL2/SDL.h"
+#include "external/miniaudio.h"
+#include "external/custom_backend.c"
 
 #include <stdlib.h>                     // Required for: malloc(), free()
 #include <stdio.h>                      // Required for: FILE, fopen(), fclose(), fread()
@@ -301,8 +305,8 @@ struct rAudioProcessor {
 // Audio data context
 typedef struct AudioData {
     struct {
-        ma_context context;         // miniaudio context data
-        ma_device device;           // miniaudio device
+        ma_context_ex context;         // miniaudio context data
+        ma_device_ex device;           // miniaudio device
         ma_mutex lock;              // miniaudio mutex lock
         bool isReady;               // Check if audio device is ready
         size_t pcmBufferSize;       // Pre-allocated buffer size
@@ -381,65 +385,67 @@ void UntrackAudioBuffer(AudioBuffer *buffer);
 // Initialize audio device
 void InitAudioDevice(void)
 {
-    // Init audio context
-    ma_context_config ctxConfig = ma_context_config_init();
-    ma_log_callback_init(OnLog, NULL);
+    // Initialize SDL2 audio subsystem (required for Vita)
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+        TRACELOG(LOG_WARNING, "AUDIO: Failed to initialize SDL2 audio subsystem: %s", SDL_GetError());
+        return;
+    }
+    ma_context_config contextConfig = ma_context_config_init();
+    contextConfig.custom.onContextInit = ma_context_init__custom_loader;
 
-    ma_result result = ma_context_init(NULL, 0, &ctxConfig, &AUDIO.System.context);
-    if (result != MA_SUCCESS)
-    {
-        TRACELOG(LOG_WARNING, "AUDIO: Failed to initialize context");
+    // Use only the custom backend
+    ma_backend backends[] = { ma_backend_custom };
+
+    ma_result result = ma_context_init(backends, 1, &contextConfig, (ma_context*)&AUDIO.System.context);
+    if (result != MA_SUCCESS) {
+        TRACELOG(LOG_WARNING, "AUDIO: Failed to initialize audio context: %d", result);
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return;
     }
 
-    // Init audio device
-    // NOTE: Using the default device. Format is floating point because it simplifies mixing
+    // Initialize audio device
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
-    config.playback.pDeviceID = NULL;  // NULL for the default playback AUDIO.System.device
-    config.playback.format = AUDIO_DEVICE_FORMAT;
-    config.playback.channels = AUDIO_DEVICE_CHANNELS;
-    config.capture.pDeviceID = NULL;  // NULL for the default capture AUDIO.System.device
-    config.capture.format = ma_format_s16;
-    config.capture.channels = 1;
-    config.sampleRate = AUDIO_DEVICE_SAMPLE_RATE;
+    config.playback.pDeviceID = NULL; // Default playback device
+    config.playback.format = ma_format_f32; // Vita typically uses 16-bit audio
+    config.playback.channels = 2; // Stereo
+    config.sampleRate = 48000; // Vita standard sample rate
     config.dataCallback = OnSendAudioDataToDevice;
     config.pUserData = NULL;
 
-    result = ma_device_init(&AUDIO.System.context, &config, &AUDIO.System.device);
-    if (result != MA_SUCCESS)
-    {
-        TRACELOG(LOG_WARNING, "AUDIO: Failed to initialize playback device");
-        ma_context_uninit(&AUDIO.System.context);
+    result = ma_device_init((ma_context*)&AUDIO.System.context, &config, (ma_device*)&AUDIO.System.device);
+    if (result != MA_SUCCESS) {
+        TRACELOG(LOG_WARNING, "AUDIO: Failed to initialize playback device: %d", result);
+        ma_context_uninit((ma_context*)&AUDIO.System.context);
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return;
     }
 
-    // Mixing happens on a separate thread which means we need to synchronize. I'm using a mutex here to make things simple, but may
-    // want to look at something a bit smarter later on to keep everything real-time, if that's necessary
-    if (ma_mutex_init(&AUDIO.System.lock) != MA_SUCCESS)
-    {
+    // Initialize mutex for thread safety
+    if (ma_mutex_init(&AUDIO.System.lock) != MA_SUCCESS) {
         TRACELOG(LOG_WARNING, "AUDIO: Failed to create mutex for mixing");
-        ma_device_uninit(&AUDIO.System.device);
-        ma_context_uninit(&AUDIO.System.context);
+        ma_device_uninit((ma_device*)&AUDIO.System.device);
+        ma_context_uninit((ma_context*)&AUDIO.System.context);
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return;
     }
 
-    // Keep the device running the whole time. May want to consider doing something a bit smarter and only have the device running
-    // while there's at least one sound being played
-    result = ma_device_start(&AUDIO.System.device);
-    if (result != MA_SUCCESS)
-    {
-        TRACELOG(LOG_WARNING, "AUDIO: Failed to start playback device");
-        ma_device_uninit(&AUDIO.System.device);
-        ma_context_uninit(&AUDIO.System.context);
+    // Start the device
+    result = ma_device_start((ma_device*)&AUDIO.System.device);
+    if (result != MA_SUCCESS) {
+        TRACELOG(LOG_WARNING, "AUDIO: Failed to start playback device: %d", result);
+        ma_mutex_uninit(&AUDIO.System.lock);
+        ma_device_uninit((ma_device*)&AUDIO.System.device);
+        ma_context_uninit((ma_context*)&AUDIO.System.context);
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return;
     }
 
     TRACELOG(LOG_INFO, "AUDIO: Device initialized successfully");
-    TRACELOG(LOG_INFO, "    > Backend:       miniaudio | %s", ma_get_backend_name(AUDIO.System.context.backend));
-    TRACELOG(LOG_INFO, "    > Format:        %s -> %s", ma_get_format_name(AUDIO.System.device.playback.format), ma_get_format_name(AUDIO.System.device.playback.internalFormat));
-    TRACELOG(LOG_INFO, "    > Channels:      %d -> %d", AUDIO.System.device.playback.channels, AUDIO.System.device.playback.internalChannels);
-    TRACELOG(LOG_INFO, "    > Sample rate:   %d -> %d", AUDIO.System.device.sampleRate, AUDIO.System.device.playback.internalSampleRate);
-    TRACELOG(LOG_INFO, "    > Periods size:  %d", AUDIO.System.device.playback.internalPeriodSizeInFrames*AUDIO.System.device.playback.internalPeriods);
+    TRACELOG(LOG_INFO, "    > Backend:       miniaudio | SDL2");
+    TRACELOG(LOG_INFO, "    > Format:        %s", ma_get_format_name(AUDIO.System.device.device.playback.format));
+    TRACELOG(LOG_INFO, "    > Channels:      %d", AUDIO.System.device.device.playback.channels);
+    TRACELOG(LOG_INFO, "    > Sample rate:   %d", AUDIO.System.device.device.sampleRate);
+    TRACELOG(LOG_INFO, "    > Periods size:  %d", AUDIO.System.device.device.playback.internalPeriodSizeInFrames * AUDIO.System.device.device.playback.internalPeriods);
 
     AUDIO.System.isReady = true;
 }
@@ -447,11 +453,11 @@ void InitAudioDevice(void)
 // Close the audio device for all contexts
 void CloseAudioDevice(void)
 {
-    if (AUDIO.System.isReady)
-    {
+    if (AUDIO.System.isReady) {
         ma_mutex_uninit(&AUDIO.System.lock);
-        ma_device_uninit(&AUDIO.System.device);
-        ma_context_uninit(&AUDIO.System.context);
+        ma_device_uninit((ma_device*)&AUDIO.System.device);
+        ma_context_uninit((ma_context*)&AUDIO.System.context);
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
 
         AUDIO.System.isReady = false;
         RL_FREE(AUDIO.System.pcmBuffer);
@@ -459,8 +465,9 @@ void CloseAudioDevice(void)
         AUDIO.System.pcmBufferSize = 0;
 
         TRACELOG(LOG_INFO, "AUDIO: Device closed successfully");
+    } else {
+        TRACELOG(LOG_WARNING, "AUDIO: Device could not be closed, not currently initialized");
     }
-    else TRACELOG(LOG_WARNING, "AUDIO: Device could not be closed, not currently initialized");
 }
 
 // Check if device has been initialized successfully
@@ -501,7 +508,7 @@ AudioBuffer *LoadAudioBuffer(ma_format format, ma_uint32 channels, ma_uint32 sam
     if (sizeInFrames > 0) audioBuffer->data = RL_CALLOC(sizeInFrames*channels*ma_get_bytes_per_sample(format), 1);
 
     // Audio data runs through a format converter
-    ma_data_converter_config converterConfig = ma_data_converter_config_init(format, AUDIO_DEVICE_FORMAT, channels, AUDIO_DEVICE_CHANNELS, sampleRate, AUDIO.System.device.sampleRate);
+    ma_data_converter_config converterConfig = ma_data_converter_config_init(format, AUDIO_DEVICE_FORMAT, channels, AUDIO_DEVICE_CHANNELS, sampleRate, AUDIO.System.device.device.sampleRate);
     converterConfig.allowDynamicSampleRate = true;
 
     ma_result result = ma_data_converter_init(&converterConfig, NULL, &audioBuffer->converter);
@@ -862,21 +869,21 @@ Sound LoadSoundFromWave(Wave wave)
         ma_format formatIn = ((wave.sampleSize == 8)? ma_format_u8 : ((wave.sampleSize == 16)? ma_format_s16 : ma_format_f32));
         ma_uint32 frameCountIn = wave.frameCount;
 
-        ma_uint32 frameCount = (ma_uint32)ma_convert_frames(NULL, 0, AUDIO_DEVICE_FORMAT, AUDIO_DEVICE_CHANNELS, AUDIO.System.device.sampleRate, NULL, frameCountIn, formatIn, wave.channels, wave.sampleRate);
+        ma_uint32 frameCount = (ma_uint32)ma_convert_frames(NULL, 0, AUDIO_DEVICE_FORMAT, AUDIO_DEVICE_CHANNELS, AUDIO.System.device.device.sampleRate, NULL, frameCountIn, formatIn, wave.channels, wave.sampleRate);
         if (frameCount == 0) TRACELOG(LOG_WARNING, "SOUND: Failed to get frame count for format conversion");
 
-        AudioBuffer *audioBuffer = LoadAudioBuffer(AUDIO_DEVICE_FORMAT, AUDIO_DEVICE_CHANNELS, AUDIO.System.device.sampleRate, frameCount, AUDIO_BUFFER_USAGE_STATIC);
+        AudioBuffer *audioBuffer = LoadAudioBuffer(AUDIO_DEVICE_FORMAT, AUDIO_DEVICE_CHANNELS, AUDIO.System.device.device.sampleRate, frameCount, AUDIO_BUFFER_USAGE_STATIC);
         if (audioBuffer == NULL)
         {
             TRACELOG(LOG_WARNING, "SOUND: Failed to create buffer");
             return sound; // early return to avoid dereferencing the audioBuffer null pointer
         }
 
-        frameCount = (ma_uint32)ma_convert_frames(audioBuffer->data, frameCount, AUDIO_DEVICE_FORMAT, AUDIO_DEVICE_CHANNELS, AUDIO.System.device.sampleRate, wave.data, frameCountIn, formatIn, wave.channels, wave.sampleRate);
+        frameCount = (ma_uint32)ma_convert_frames(audioBuffer->data, frameCount, AUDIO_DEVICE_FORMAT, AUDIO_DEVICE_CHANNELS, AUDIO.System.device.device.sampleRate, wave.data, frameCountIn, formatIn, wave.channels, wave.sampleRate);
         if (frameCount == 0) TRACELOG(LOG_WARNING, "SOUND: Failed format conversion");
 
         sound.frameCount = frameCount;
-        sound.stream.sampleRate = AUDIO.System.device.sampleRate;
+        sound.stream.sampleRate = AUDIO.System.device.device.sampleRate;
         sound.stream.sampleSize = 32;
         sound.stream.channels = AUDIO_DEVICE_CHANNELS;
         sound.stream.buffer = audioBuffer;
@@ -893,7 +900,7 @@ Sound LoadSoundAlias(Sound source)
 
     if (source.stream.buffer->data != NULL)
     {
-        AudioBuffer *audioBuffer = LoadAudioBuffer(AUDIO_DEVICE_FORMAT, AUDIO_DEVICE_CHANNELS, AUDIO.System.device.sampleRate, 0, AUDIO_BUFFER_USAGE_STATIC);
+        AudioBuffer *audioBuffer = LoadAudioBuffer(AUDIO_DEVICE_FORMAT, AUDIO_DEVICE_CHANNELS, AUDIO.System.device.device.sampleRate, 0, AUDIO_BUFFER_USAGE_STATIC);
 
         if (audioBuffer == NULL)
         {
@@ -906,7 +913,7 @@ Sound LoadSoundAlias(Sound source)
         audioBuffer->data = source.stream.buffer->data;
 
         sound.frameCount = source.frameCount;
-        sound.stream.sampleRate = AUDIO.System.device.sampleRate;
+        sound.stream.sampleRate = AUDIO.System.device.device.sampleRate;
         sound.stream.sampleSize = 32;
         sound.stream.channels = AUDIO_DEVICE_CHANNELS;
         sound.stream.buffer = audioBuffer;
@@ -2022,10 +2029,10 @@ AudioStream LoadAudioStream(unsigned int sampleRate, unsigned int sampleSize, un
     ma_format formatIn = ((stream.sampleSize == 8)? ma_format_u8 : ((stream.sampleSize == 16)? ma_format_s16 : ma_format_f32));
 
     // The size of a streaming buffer must be at least double the size of a period
-    unsigned int periodSize = AUDIO.System.device.playback.internalPeriodSizeInFrames;
+    unsigned int periodSize = AUDIO.System.device.device.playback.internalPeriodSizeInFrames;
 
     // If the buffer is not set, compute one that would give us a buffer good enough for a decent frame rate
-    unsigned int subBufferSize = (AUDIO.Buffer.defaultSize == 0)? AUDIO.System.device.sampleRate/30 : AUDIO.Buffer.defaultSize;
+    unsigned int subBufferSize = (AUDIO.Buffer.defaultSize == 0)? AUDIO.System.device.device.sampleRate/30 : AUDIO.Buffer.defaultSize;
 
     if (subBufferSize < periodSize) subBufferSize = periodSize;
 
@@ -2445,7 +2452,7 @@ static void OnSendAudioDataToDevice(ma_device *pDevice, void *pFramesOut, const 
                     ma_uint32 framesJustRead = ReadAudioBufferFramesInMixingFormat(audioBuffer, tempBuffer, framesToReadRightNow);
                     if (framesJustRead > 0)
                     {
-                        float *framesOut = (float *)pFramesOut + (framesRead*AUDIO.System.device.playback.channels);
+                        float *framesOut = (float *)pFramesOut + (framesRead*AUDIO.System.device.device.playback.channels);
                         float *framesIn = tempBuffer;
 
                         // Apply processors chain if defined
@@ -2508,7 +2515,7 @@ static void OnSendAudioDataToDevice(ma_device *pDevice, void *pFramesOut, const 
 static void MixAudioFrames(float *framesOut, const float *framesIn, ma_uint32 frameCount, AudioBuffer *buffer)
 {
     const float localVolume = buffer->volume;
-    const ma_uint32 channels = AUDIO.System.device.playback.channels;
+    const ma_uint32 channels = AUDIO.System.device.device.playback.channels;
 
     if (channels == 2)  // We consider panning
     {

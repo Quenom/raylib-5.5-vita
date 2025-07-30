@@ -13433,6 +13433,10 @@ void ma_log_callback_debug(void* pUserData, ma_uint32 level, const char* pMessag
         /* Android. */
         __android_log_print(ANDROID_LOG_DEBUG, MA_ANDROID_LOG_TAG, "%s: %s", ma_log_level_to_string(level), pMessage);
     }
+    #elif defined(PLATFORM_VITA)
+    {
+        sceClibPrintf("%s: %s", ma_log_level_to_string(level), pMessage);
+    }
     #else
     {
         /* Everything else. */
