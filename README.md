@@ -2,7 +2,8 @@
 
 raylib vita using pvr driver
 
-everything apart from sound should work
+everything should work.
+supports wav ogg and mp3 playback
 
 requires sdl2 with pvr support
 
