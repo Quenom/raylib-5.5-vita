@@ -245,8 +245,8 @@
 //------------------------------------------------------------------------------------
 // Desired audio fileformats to be supported for loading
 #define SUPPORT_FILEFORMAT_WAV          1
-//#define SUPPORT_FILEFORMAT_OGG          1
-//#define SUPPORT_FILEFORMAT_MP3          1
+#define SUPPORT_FILEFORMAT_OGG          1
+#define SUPPORT_FILEFORMAT_MP3          1
 //#define SUPPORT_FILEFORMAT_QOA          1
 //#define SUPPORT_FILEFORMAT_FLAC         1
 //#define SUPPORT_FILEFORMAT_XM           1
@@ -254,7 +254,7 @@
 
 // raudio: Configuration values
 //------------------------------------------------------------------------------------
-#define AUDIO_DEVICE_FORMAT    ma_format_f32    // Device output format (miniaudio: float-32bit)
+#define AUDIO_DEVICE_FORMAT    ma_format_f32   // Device output format (miniaudio: float-32bit)
 #define AUDIO_DEVICE_CHANNELS              2    // Device output channels: stereo
 #define AUDIO_DEVICE_SAMPLE_RATE           48000    // Device sample rate (device default)
 

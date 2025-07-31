@@ -213,7 +213,7 @@
 // Defines and Macros
 //----------------------------------------------------------------------------------
 #ifndef AUDIO_DEVICE_FORMAT
-    #define AUDIO_DEVICE_FORMAT    ma_format_f32    // Device output format (float-32bit)
+    #define AUDIO_DEVICE_FORMAT    ma_format_s16    // Device output format (float-32bit)
 #endif
 #ifndef AUDIO_DEVICE_CHANNELS
     #define AUDIO_DEVICE_CHANNELS              2    // Device output channels: stereo
@@ -406,9 +406,9 @@ void InitAudioDevice(void)
     // Initialize audio device
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
     config.playback.pDeviceID = NULL; // Default playback device
-    config.playback.format = ma_format_f32; // Vita typically uses 16-bit audio
-    config.playback.channels = 2; // Stereo
-    config.sampleRate = 48000; // Vita standard sample rate
+    config.playback.format = AUDIO_DEVICE_FORMAT;
+    config.playback.channels = AUDIO_DEVICE_CHANNELS;
+    config.sampleRate = AUDIO_DEVICE_SAMPLE_RATE;
     config.dataCallback = OnSendAudioDataToDevice;
     config.pUserData = NULL;
 
