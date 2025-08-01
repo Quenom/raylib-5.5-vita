@@ -83,6 +83,7 @@
 
 #if defined(SUPPORT_MODULE_RAUDIO)
 
+#define BUFFER_SIZE 512//???
 #define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
 #define MA_ENABLE_CUSTOM
 #define MA_ENABLE_SDL
@@ -213,7 +214,7 @@
 // Defines and Macros
 //----------------------------------------------------------------------------------
 #ifndef AUDIO_DEVICE_FORMAT
-    #define AUDIO_DEVICE_FORMAT    ma_format_s16    // Device output format (float-32bit)
+    #define AUDIO_DEVICE_FORMAT    ma_format_f32    // Device output format (float-32bit)
 #endif
 #ifndef AUDIO_DEVICE_CHANNELS
     #define AUDIO_DEVICE_CHANNELS              2    // Device output channels: stereo
@@ -385,67 +386,69 @@ void UntrackAudioBuffer(AudioBuffer *buffer);
 // Initialize audio device
 void InitAudioDevice(void)
 {
-    // Initialize SDL2 audio subsystem (required for Vita)
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
-        TRACELOG(LOG_WARNING, "AUDIO: Failed to initialize SDL2 audio subsystem: %s", SDL_GetError());
-        return;
-    }
-    ma_context_config contextConfig = ma_context_config_init();
-    contextConfig.custom.onContextInit = ma_context_init__custom_loader;
+    // Init audio context
+    ma_context_config ctxConfig = ma_context_config_init();
+    ctxConfig.custom.onContextInit = ma_context_init__custom_loader;
 
     // Use only the custom backend
     ma_backend backends[] = { ma_backend_custom };
+    ma_log_callback_init(OnLog, NULL);
 
-    ma_result result = ma_context_init(backends, 1, &contextConfig, (ma_context*)&AUDIO.System.context);
-    if (result != MA_SUCCESS) {
-        TRACELOG(LOG_WARNING, "AUDIO: Failed to initialize audio context: %d", result);
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    ma_result result = ma_context_init(backends, 1, &ctxConfig, &AUDIO.System.context);
+    if (result != MA_SUCCESS)
+    {
+        TRACELOG(LOG_WARNING, "AUDIO: Failed to initialize context");
         return;
     }
 
-    // Initialize audio device
+    // Init audio device
+    // NOTE: Using the default device. Format is floating point because it simplifies mixing
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
-    config.playback.pDeviceID = NULL; // Default playback device
+    config.playback.pDeviceID = NULL;  // NULL for the default playback AUDIO.System.device
     config.playback.format = AUDIO_DEVICE_FORMAT;
     config.playback.channels = AUDIO_DEVICE_CHANNELS;
+    config.capture.pDeviceID = NULL;  // NULL for the default capture AUDIO.System.device
+    config.capture.format = ma_format_s16;
+    config.capture.channels = 1;
     config.sampleRate = AUDIO_DEVICE_SAMPLE_RATE;
     config.dataCallback = OnSendAudioDataToDevice;
     config.pUserData = NULL;
 
-    result = ma_device_init((ma_context*)&AUDIO.System.context, &config, (ma_device*)&AUDIO.System.device);
-    if (result != MA_SUCCESS) {
-        TRACELOG(LOG_WARNING, "AUDIO: Failed to initialize playback device: %d", result);
-        ma_context_uninit((ma_context*)&AUDIO.System.context);
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    result = ma_device_init(&AUDIO.System.context, &config, &AUDIO.System.device);
+    if (result != MA_SUCCESS)
+    {
+        TRACELOG(LOG_WARNING, "AUDIO: Failed to initialize playback device");
+        ma_context_uninit(&AUDIO.System.context);
         return;
     }
 
-    // Initialize mutex for thread safety
-    if (ma_mutex_init(&AUDIO.System.lock) != MA_SUCCESS) {
+    // Mixing happens on a separate thread which means we need to synchronize. I'm using a mutex here to make things simple, but may
+    // want to look at something a bit smarter later on to keep everything real-time, if that's necessary
+    if (ma_mutex_init(&AUDIO.System.lock) != MA_SUCCESS)
+    {
         TRACELOG(LOG_WARNING, "AUDIO: Failed to create mutex for mixing");
-        ma_device_uninit((ma_device*)&AUDIO.System.device);
-        ma_context_uninit((ma_context*)&AUDIO.System.context);
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        ma_device_uninit(&AUDIO.System.device);
+        ma_context_uninit(&AUDIO.System.context);
         return;
     }
 
-    // Start the device
-    result = ma_device_start((ma_device*)&AUDIO.System.device);
-    if (result != MA_SUCCESS) {
-        TRACELOG(LOG_WARNING, "AUDIO: Failed to start playback device: %d", result);
-        ma_mutex_uninit(&AUDIO.System.lock);
-        ma_device_uninit((ma_device*)&AUDIO.System.device);
-        ma_context_uninit((ma_context*)&AUDIO.System.context);
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    // Keep the device running the whole time. May want to consider doing something a bit smarter and only have the device running
+    // while there's at least one sound being played
+    result = ma_device_start(&AUDIO.System.device);
+    if (result != MA_SUCCESS)
+    {
+        TRACELOG(LOG_WARNING, "AUDIO: Failed to start playback device");
+        ma_device_uninit(&AUDIO.System.device);
+        ma_context_uninit(&AUDIO.System.context);
         return;
     }
 
     TRACELOG(LOG_INFO, "AUDIO: Device initialized successfully");
-    TRACELOG(LOG_INFO, "    > Backend:       miniaudio | SDL2");
-    TRACELOG(LOG_INFO, "    > Format:        %s", ma_get_format_name(AUDIO.System.device.device.playback.format));
-    TRACELOG(LOG_INFO, "    > Channels:      %d", AUDIO.System.device.device.playback.channels);
-    TRACELOG(LOG_INFO, "    > Sample rate:   %d", AUDIO.System.device.device.sampleRate);
-    TRACELOG(LOG_INFO, "    > Periods size:  %d", AUDIO.System.device.device.playback.internalPeriodSizeInFrames * AUDIO.System.device.device.playback.internalPeriods);
+    TRACELOG(LOG_INFO, "    > Backend:       miniaudio | %s", ma_get_backend_name(AUDIO.System.context.context.backend));
+    TRACELOG(LOG_INFO, "    > Format:        %s -> %s", ma_get_format_name(AUDIO.System.device.device.playback.format), ma_get_format_name(AUDIO.System.device.device.playback.internalFormat));
+    TRACELOG(LOG_INFO, "    > Channels:      %d -> %d", AUDIO.System.device.device.playback.channels, AUDIO.System.device.device.playback.internalChannels);
+    TRACELOG(LOG_INFO, "    > Sample rate:   %d -> %d", AUDIO.System.device.device.sampleRate, AUDIO.System.device.device.playback.internalSampleRate);
+    TRACELOG(LOG_INFO, "    > Periods size:  %d", AUDIO.System.device.device.playback.internalPeriodSizeInFrames*AUDIO.System.device.device.playback.internalPeriods);
 
     AUDIO.System.isReady = true;
 }
@@ -453,11 +456,11 @@ void InitAudioDevice(void)
 // Close the audio device for all contexts
 void CloseAudioDevice(void)
 {
-    if (AUDIO.System.isReady) {
+    if (AUDIO.System.isReady)
+    {
         ma_mutex_uninit(&AUDIO.System.lock);
-        ma_device_uninit((ma_device*)&AUDIO.System.device);
-        ma_context_uninit((ma_context*)&AUDIO.System.context);
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        ma_device_uninit(&AUDIO.System.device);
+        ma_context_uninit(&AUDIO.System.context);
 
         AUDIO.System.isReady = false;
         RL_FREE(AUDIO.System.pcmBuffer);
@@ -465,9 +468,8 @@ void CloseAudioDevice(void)
         AUDIO.System.pcmBufferSize = 0;
 
         TRACELOG(LOG_INFO, "AUDIO: Device closed successfully");
-    } else {
-        TRACELOG(LOG_WARNING, "AUDIO: Device could not be closed, not currently initialized");
     }
+    else TRACELOG(LOG_WARNING, "AUDIO: Device could not be closed, not currently initialized");
 }
 
 // Check if device has been initialized successfully

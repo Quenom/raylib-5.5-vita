@@ -288,7 +288,7 @@ static ma_result ma_context_get_device_info__sdl(ma_context* pContext, ma_device
     }
 
     tempDeviceID = ((MA_PFN_SDL_OpenAudioDevice)pContextEx->sdl.SDL_OpenAudioDevice)(pDeviceName, (deviceType == ma_device_type_playback) ? 0 : 1, &desiredSpec, &obtainedSpec, MA_SDL_AUDIO_ALLOW_ANY_CHANGE);
-    if (tempDeviceID == 0) {
+	if (tempDeviceID == 0) {
         ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_ERROR, "Failed to open SDL device.");
         return MA_FAILED_TO_OPEN_BACKEND_DEVICE;
     }
@@ -362,14 +362,9 @@ static ma_result ma_device_init_internal__sdl(ma_device_ex* pDeviceEx, const ma_
     pDescriptor->periodSizeInFrames = ma_calculate_buffer_size_in_frames_from_descriptor(pDescriptor, pDescriptor->sampleRate, pConfig->performanceProfile);
 
     /* SDL wants the buffer size to be a power of 2 for some reason. */
-    if (pDescriptor->periodSizeInFrames > 32768) {
-        pDescriptor->periodSizeInFrames = 32768;
-    } else {
-        pDescriptor->periodSizeInFrames = ma_next_power_of_2(pDescriptor->periodSizeInFrames);
-    }
+	pDescriptor->periodSizeInFrames = BUFFER_SIZE;
 
-
-    /* We now have enough information to set up the device. */
+	/* We now have enough information to set up the device. */
     MA_ZERO_OBJECT(&desiredSpec);
     desiredSpec.freq     = (int)pDescriptor->sampleRate;
     desiredSpec.format   = ma_format_to_sdl(pDescriptor->format);
@@ -388,7 +383,7 @@ static ma_result ma_device_init_internal__sdl(ma_device_ex* pDeviceEx, const ma_
         pDeviceName = ((MA_PFN_SDL_GetAudioDeviceName)pContextEx->sdl.SDL_GetAudioDeviceName)(pDescriptor->pDeviceID->custom.i, (pConfig->deviceType == ma_device_type_playback) ? 0 : 1);
     }
 
-    deviceID = ((MA_PFN_SDL_OpenAudioDevice)pContextEx->sdl.SDL_OpenAudioDevice)(pDeviceName, (pConfig->deviceType == ma_device_type_playback) ? 0 : 1, &desiredSpec, &obtainedSpec, MA_SDL_AUDIO_ALLOW_ANY_CHANGE);
+    deviceID = ((MA_PFN_SDL_OpenAudioDevice)pContextEx->sdl.SDL_OpenAudioDevice)(pDeviceName, (pConfig->deviceType == ma_device_type_playback) ? 0 : 1, &desiredSpec, &obtainedSpec, 0);
     if (deviceID == 0) {
         ma_log_postf(ma_device_get_log((ma_device*)pDeviceEx), MA_LOG_LEVEL_ERROR, "Failed to open SDL2 device.");
         return MA_FAILED_TO_OPEN_BACKEND_DEVICE;
@@ -582,7 +577,6 @@ static ma_result ma_context_init__sdl(ma_context* pContext, const ma_context_con
 This is our custom backend "loader". All this does is attempts to initialize our custom backends in the order they are listed. The first
 one to successfully initialize is the one that's chosen. In this example we're just listing them statically, but you can use whatever logic
 you want to handle backend selection.
-
 
 This is used as the onContextInit() callback in the context config.
 */
